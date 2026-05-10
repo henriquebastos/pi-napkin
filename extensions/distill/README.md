@@ -43,7 +43,19 @@ All distill settings live in `.napkin/config.json` under the `distill` key:
 | `distill.intervalMinutes` | `60` | How often to check for new content |
 | `distill.model.provider` | `"anthropic"` | LLM provider |
 | `distill.model.id` | `"claude-sonnet-4-6"` | Model for distillation |
+| `distill.prompt` | unset | Inline prompt override. Takes precedence over `promptPath`. |
+| `distill.promptPath` | unset | Prompt file path. Relative paths resolve from the vault root, not `.napkin/`. |
 
+Example custom prompt path:
+
+```json
+{
+  "distill": {
+    "enabled": false,
+    "promptPath": "shared/design/Napkin Distill Prompt.md"
+  }
+}
+```
 
 ## Manual trigger
 

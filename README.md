@@ -54,6 +54,21 @@ napkin --vault ~/.pi/agent/kb config set --key distill.enabled --value true
 | `distill.intervalMinutes` | `60` | Timer interval |
 | `distill.model.provider` | `"anthropic"` | Model provider |
 | `distill.model.id` | `"claude-sonnet-4-6"` | Model for distillation |
+| `distill.prompt` | unset | Inline prompt override. Takes precedence over `promptPath`. |
+| `distill.promptPath` | unset | Prompt file path. Relative paths resolve from the vault root, not `.napkin/`. |
+
+Example:
+
+```json
+{
+  "distill": {
+    "enabled": false,
+    "promptPath": "shared/design/Napkin Distill Prompt.md"
+  }
+}
+```
+
+`/distill` can still be used manually when automatic distillation is disabled.
 
 ## License
 

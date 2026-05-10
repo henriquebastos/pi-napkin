@@ -10,6 +10,10 @@ interface DistillConfig {
   enabled: boolean;
   intervalMinutes: number;
   model: { provider: string; id: string };
+  /** Inline prompt override. When set, takes precedence over promptPath. */
+  prompt?: string;
+  /** Prompt file path. Relative paths resolve from the vault root, not .napkin/. */
+  promptPath?: string;
 }
 
 interface VaultConfig {
@@ -41,7 +45,7 @@ function loadVaultConfig(vaultPath: string): VaultConfig {
   }
 }
 
-const DISTILL_PROMPT = `Distill this conversation into the napkin vault.
+const DEFAULT_DISTILL_PROMPT = `Distill this conversation into the napkin vault.
 
 1. \`napkin overview\` — learn the vault structure and what exists
 2. \`napkin template list\` and \`napkin template read\` — learn the note formats
@@ -52,6 +56,37 @@ const DISTILL_PROMPT = `Distill this conversation into the napkin vault.
    c. Add \`[[wikilinks]]\` to related notes
 
 Be selective. Only capture knowledge useful to someone working on this project later. Skip meta-discussion, tool output, and chatter.`;
+
+function expandHome(filePath: string): string {
+  if (filePath === "~") return os.homedir();
+  if (filePath.startsWith("~/"))
+    return path.join(os.homedir(), filePath.slice(2));
+  return filePath;
+}
+
+function loadDistillPrompt(vaultPath: string, config: DistillConfig): string {
+  const inlinePrompt = config.prompt?.trim();
+  if (inlinePrompt) return inlinePrompt;
+
+  const promptPath = config.promptPath?.trim();
+  if (!promptPath) return DEFAULT_DISTILL_PROMPT;
+
+  const expandedPath = expandHome(promptPath);
+  const resolvedPath = path.isAbsolute(expandedPath)
+    ? expandedPath
+    : path.join(path.dirname(vaultPath), expandedPath);
+
+  if (!fs.existsSync(resolvedPath)) {
+    throw new Error(`Distill prompt file not found: ${resolvedPath}`);
+  }
+
+  const prompt = fs.readFileSync(resolvedPath, "utf-8").trim();
+  if (!prompt) {
+    throw new Error(`Distill prompt file is empty: ${resolvedPath}`);
+  }
+
+  return prompt;
+}
 
 /**
  * Escape a string for use in single-quoted shell arguments.
@@ -69,6 +104,7 @@ function spawnDistill(
   sessionFile: string,
   cwd: string,
   config: DistillConfig,
+  prompt: string,
 ): string | null {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "napkin-distill-"));
 
@@ -86,7 +122,7 @@ function spawnDistill(
       "-p",
       "--model",
       `${config.model.provider}/${config.model.id}`,
-      DISTILL_PROMPT,
+      prompt,
     ];
 
     // Shell wrapper: run pi, then clean up temp dir regardless of exit code
@@ -205,7 +241,25 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const tmpDir = spawnDistill(sessionFile, ctx.cwd, config);
+    let prompt: string;
+    try {
+      prompt = loadDistillPrompt(vaultPath, config);
+    } catch (error) {
+      if (ctx.hasUI && ctx.ui.theme && showStatus) {
+        ctx.ui.setStatus(
+          "napkin-distill",
+          ctx.ui.theme.fg("error", "✗") +
+            ctx.ui.theme.fg("dim", " distill: prompt failed"),
+        );
+        ctx.ui.notify(
+          error instanceof Error ? error.message : String(error),
+          "error",
+        );
+      }
+      return;
+    }
+
+    const tmpDir = spawnDistill(sessionFile, ctx.cwd, config, prompt);
     if (!tmpDir) {
       if (ctx.hasUI && ctx.ui.theme && showStatus) {
         ctx.ui.setStatus(

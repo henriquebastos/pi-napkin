@@ -26,19 +26,25 @@ The `napkin` skill gives the agent full CLI reference for napkin — all command
 
 ## Vault resolution
 
-Both extensions resolve the vault in this order:
-
-1. **Local project vault** — walk up from cwd looking for `.napkin/`
-2. **Global fallback** — read `~/.pi/agent/napkin.json` for a default vault path
+Both extensions read `~/.pi/agent/napkin.json` for the default vault path and optional resolution mode:
 
 ```json
 // ~/.pi/agent/napkin.json
 {
-  "vault": "~/.pi/agent/kb"
+  "vault": "~/.pi/agent/kb",
+  "resolution": "bounded"
 }
 ```
 
-Local project vaults take priority when present.
+Resolution modes:
+
+| Mode | Behavior |
+|------|----------|
+| `nearest` | Current/legacy behavior: walk up from cwd looking for the nearest `.napkin/`, then fall back to the configured vault. |
+| `fixed` | Always use the configured vault. Do not walk parent directories. |
+| `bounded` | Walk up from cwd for project-local `.napkin/`, but stop at the git root or before `$HOME`; then fall back to the configured vault. |
+
+If `resolution` is omitted, `nearest` is used for backward compatibility. Use `fixed` for a single personal KB, or `bounded` when you want project-local vaults without accidentally treating `$HOME` as a vault.
 
 ## Distillation config
 

@@ -57,6 +57,22 @@ Example custom prompt path:
 }
 ```
 
+## Distill run logs
+
+Each distillation writes a run directory under the vault's `.napkin/distill-runs/` folder:
+
+```text
+.napkin/distill-runs/<timestamp>/
+  metadata.json
+  prompt.md
+  stdout.md
+  stderr.log
+  exit-code.txt
+  completed-at.txt
+```
+
+Use `stdout.md` to see the distillation summary (notes created, notes updated, and skipped items). A missing or non-zero `exit-code.txt` means the child `pi` process failed or timed out.
+
 ## Manual trigger
 
 Use `/distill` in pi to manually trigger distillation of the full conversation.

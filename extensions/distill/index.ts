@@ -21,6 +21,14 @@ interface VaultConfig {
   distill: DistillConfig;
 }
 
+interface DistillRun {
+  tmpDir: string;
+  runDir: string;
+  stdoutPath: string;
+  stderrPath: string;
+  exitCodePath: string;
+}
+
 const MAX_DISTILL_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 const DEFAULT_DISTILL: DistillConfig = {
@@ -88,6 +96,26 @@ function loadDistillPrompt(vaultPath: string, config: DistillConfig): string {
   return prompt;
 }
 
+function timestampForPath(date = new Date()): string {
+  return date.toISOString().replace(/[:.]/g, "-");
+}
+
+function createDistillRunDir(vaultPath: string): string {
+  const runsDir = path.join(vaultPath, "distill-runs");
+  fs.mkdirSync(runsDir, { recursive: true });
+
+  const baseName = timestampForPath();
+  let runDir = path.join(runsDir, baseName);
+  let suffix = 1;
+  while (fs.existsSync(runDir)) {
+    runDir = path.join(runsDir, `${baseName}-${suffix}`);
+    suffix += 1;
+  }
+
+  fs.mkdirSync(runDir, { recursive: true });
+  return runDir;
+}
+
 /**
  * Escape a string for use in single-quoted shell arguments.
  */
@@ -105,8 +133,10 @@ function spawnDistill(
   cwd: string,
   config: DistillConfig,
   prompt: string,
-): string | null {
+  vaultPath: string,
+): DistillRun | null {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "napkin-distill-"));
+  let runDir: string | null = null;
 
   try {
     const forkedSm = SessionManager.forkFrom(sessionFile, cwd, tmpDir);
@@ -115,6 +145,28 @@ function spawnDistill(
       fs.rmSync(tmpDir, { recursive: true, force: true });
       return null;
     }
+
+    runDir = createDistillRunDir(vaultPath);
+    const stdoutPath = path.join(runDir, "stdout.md");
+    const stderrPath = path.join(runDir, "stderr.log");
+    const exitCodePath = path.join(runDir, "exit-code.txt");
+    const completedAtPath = path.join(runDir, "completed-at.txt");
+
+    fs.writeFileSync(path.join(runDir, "prompt.md"), `${prompt}\n`);
+    fs.writeFileSync(
+      path.join(runDir, "metadata.json"),
+      `${JSON.stringify(
+        {
+          cwd,
+          model: `${config.model.provider}/${config.model.id}`,
+          parentSessionFile: sessionFile,
+          forkedSessionFile: forkedFile,
+          startedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     const piArgs = [
       "--session",
@@ -125,9 +177,20 @@ function spawnDistill(
       prompt,
     ];
 
-    // Shell wrapper: run pi, then clean up temp dir regardless of exit code
+    // Shell wrapper: run pi, capture output, write exit code, then clean up temp dir.
     const escapedArgs = piArgs.map((a) => `'${shellEscape(a)}'`).join(" ");
-    const cmd = `pi ${escapedArgs} >/dev/null 2>&1; rm -rf '${shellEscape(tmpDir)}'`;
+    const escapedStdout = shellEscape(stdoutPath);
+    const escapedStderr = shellEscape(stderrPath);
+    const escapedExitCode = shellEscape(exitCodePath);
+    const escapedCompletedAt = shellEscape(completedAtPath);
+    const escapedTmpDir = shellEscape(tmpDir);
+    const cmd = [
+      `pi ${escapedArgs} >'${escapedStdout}' 2>'${escapedStderr}'`,
+      "code=$?",
+      `printf '%s\\n' "$code" >'${escapedExitCode}'`,
+      `date -u +%Y-%m-%dT%H:%M:%SZ >'${escapedCompletedAt}'`,
+      `rm -rf '${escapedTmpDir}'`,
+    ].join("; ");
 
     const proc = spawn("sh", ["-c", cmd], {
       cwd,
@@ -137,9 +200,17 @@ function spawnDistill(
     });
     proc.unref();
 
-    return tmpDir;
-  } catch {
+    return { tmpDir, runDir, stdoutPath, stderrPath, exitCodePath };
+  } catch (error) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (runDir) {
+      fs.writeFileSync(
+        path.join(runDir, "spawn-error.log"),
+        error instanceof Error
+          ? `${error.stack ?? error.message}\n`
+          : `${String(error)}\n`,
+      );
+    }
     return null;
   }
 }
@@ -259,8 +330,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const tmpDir = spawnDistill(sessionFile, ctx.cwd, config, prompt);
-    if (!tmpDir) {
+    const distillRun = spawnDistill(
+      sessionFile,
+      ctx.cwd,
+      config,
+      prompt,
+      vaultPath,
+    );
+    if (!distillRun) {
       if (ctx.hasUI && ctx.ui.theme && showStatus) {
         ctx.ui.setStatus(
           "napkin-distill",
@@ -287,7 +364,7 @@ export default function (pi: ExtensionAPI) {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       const timedOut = Date.now() - startTime > MAX_DISTILL_DURATION_MS;
 
-      if (fs.existsSync(tmpDir) && !timedOut) {
+      if (fs.existsSync(distillRun.tmpDir) && !timedOut) {
         // Still running — update elapsed time in status bar
         if (ctx.hasUI && theme && showStatus) {
           ctx.ui.setStatus(
@@ -306,8 +383,13 @@ export default function (pi: ExtensionAPI) {
       isRunning = false;
 
       if (timedOut) {
-        // Clean up orphaned temp dir
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        // Clean up orphaned temp dir. The detached pi process may still finish later,
+        // but this marker prevents the UI from waiting forever.
+        fs.rmSync(distillRun.tmpDir, { recursive: true, force: true });
+        fs.writeFileSync(
+          path.join(distillRun.runDir, "timeout.txt"),
+          `Timed out after ${MAX_DISTILL_DURATION_MS}ms at ${new Date().toISOString()}\n`,
+        );
         if (ctx.hasUI && theme) {
           if (showStatus) {
             ctx.ui.setStatus(
@@ -315,7 +397,10 @@ export default function (pi: ExtensionAPI) {
               theme.fg("error", "✗") + theme.fg("dim", " distill: timeout"),
             );
           }
-          ctx.ui.notify("Distillation timed out (10m)", "error");
+          ctx.ui.notify(
+            `Distillation timed out (10m). Log: ${distillRun.runDir}`,
+            "error",
+          );
         }
         return;
       }
@@ -323,14 +408,28 @@ export default function (pi: ExtensionAPI) {
       lastDistillTimestamp = Date.now();
       lastSessionSize = currentSize;
 
+      const exitCode = fs.existsSync(distillRun.exitCodePath)
+        ? fs.readFileSync(distillRun.exitCodePath, "utf-8").trim()
+        : "unknown";
+      const succeeded = exitCode === "0";
+
       if (ctx.hasUI && theme) {
         if (showStatus) {
           ctx.ui.setStatus(
             "napkin-distill",
-            theme.fg("success", "✓") + theme.fg("dim", ` distill ${elapsed}s`),
+            succeeded
+              ? theme.fg("success", "✓") +
+                  theme.fg("dim", ` distill ${elapsed}s`)
+              : theme.fg("error", "✗") +
+                  theme.fg("dim", ` distill failed ${exitCode}`),
           );
         }
-        ctx.ui.notify(`Distillation complete (${elapsed}s)`, "success");
+        ctx.ui.notify(
+          succeeded
+            ? `Distillation complete (${elapsed}s). Log: ${distillRun.runDir}`
+            : `Distillation failed (${exitCode}). Log: ${distillRun.runDir}`,
+          succeeded ? "success" : "error",
+        );
       }
     }, 2000);
   }

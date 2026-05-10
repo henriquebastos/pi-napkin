@@ -70,6 +70,8 @@ Example:
 
 `/distill` can still be used manually when automatic distillation is disabled.
 
+Each distillation writes a run log under `.napkin/distill-runs/<timestamp>/` with `metadata.json`, `prompt.md`, `stdout.md`, `stderr.log`, `exit-code.txt`, and `completed-at.txt`. Check `stdout.md` for the notes-created/updated/skipped summary from the distillation model.
+
 ## License
 
 MIT

@@ -57,6 +57,8 @@ Example custom prompt path:
 }
 ```
 
+Resolves to `<vault-root>/shared/design/Napkin Distill Prompt.md`. Absolute paths and `~/...` are also supported.
+
 ## Distill run logs
 
 Each distillation writes a run directory under the vault's `.napkin/distill-runs/` folder:
